@@ -45,12 +45,24 @@ void run_executable(const std::string& path, const std::string& command, const s
 }
 
 int main() {
+  //  -- supported --
+  // exit : exit shell
+  // echo : print out args
+  // type : type of file/command/etc
+  // pwd : prints working directory
+  // cd : change directory
+  // + all commands specified in PATH
+
+  std::unordered_set<std::string> builtins{"exit", "echo", "type","pwd", "cd"};
+
   // Flush after every std::cout / std:cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
 
   std::string input;
   std::cout << "$ ";
+
+  std::filesystem::path curDir = std::filesystem::current_path();
 
   while (std::getline(std::cin,input)) {
     std::string delimiter = " ";
@@ -61,12 +73,12 @@ int main() {
 
     if (command == "exit") {
       break;
+    }
 
-    } else if (command == "echo") {
+    if (command == "echo") {
       std::cout << args << std::endl;
 
     } else if (command == "type") {
-      std::unordered_set<std::string> builtins{"exit", "echo", "type"};
 
       if (builtins.contains(args)) {
         std::cout << args << " is a shell builtin" << std::endl;
@@ -89,7 +101,7 @@ int main() {
                 std::cout << args << " is " << full_path.string() << std::endl;
                 found = true;
                 break;
-            }
+              }
             }
           }
         }
@@ -98,8 +110,76 @@ int main() {
           std::cout << args << ": not found" << std::endl;
         }
       }
+    } else if (command == "pwd") {
+      // print working directory
+      std::cout << curDir.string() << std::endl;
+
+    } else if (command == "cd") {
+
+      // absolute path
+      if (args[0] == '/') {
+        if (std::filesystem::is_directory(args)) {
+          curDir = args;
+        } else {
+          std::cout << "cd: " << args << ": No such file or directory" << std::endl;
+        }
+
+      } else if (args[0] == '~') {
+        // HOME directory
+        const char* env_h = std::getenv("HOME");
+
+        std::filesystem::path targetDir = std::filesystem::path(env_h);
+
+        if (args.length() > 2){
+          targetDir /= args.substr(2,args.length()-2);
+        }
+
+        if (std::filesystem::is_directory(targetDir)) {
+          curDir = targetDir;
+        } else {
+          std::cout << "cd: " << targetDir.string() << ": No such file or directory" << std::endl;
+        }
 
 
+      } else if (args.substr(0,3) == "../"){
+        // go up the number of ../ is
+
+        std::filesystem::path targetDir = curDir;
+        std::string tmp_args = args;
+
+        // remove ../ from the front of the string and go up
+        while (tmp_args.substr(0,3) == "../") {
+          targetDir = targetDir.parent_path();
+          tmp_args.erase(0,3);
+        }
+
+        if (!tmp_args.empty()) {
+          targetDir /= tmp_args;
+        }
+
+        // go to the rest of tmp_args
+        if (std::filesystem::is_directory(targetDir)) {
+            curDir = targetDir;
+        } else {
+            std::cout << "cd: " << targetDir.string() << ": No such file or directory" << std::endl;
+        }
+
+      } else {
+        // relative paths
+        auto tmp = curDir;
+
+        if (args.substr(0,2) == "./") {
+          tmp += args.substr(1,args.length());
+        } else {
+          tmp /= args;
+        }
+
+        if (std::filesystem::is_directory(tmp)) {
+          curDir = tmp;
+        } else {
+          std::cout << "cd: " << tmp.string() << ": No such file or directory" << std::endl;
+        }
+      }
     } else {
 
       // check for implementation in PATH
