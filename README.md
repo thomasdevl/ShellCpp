@@ -12,4 +12,5 @@ Implementation of a POSIX compliant shell in C++
 | **Built-in: `pwd`** | Commands | Tracks and prints the current working directory using `std::filesystem::path`. |
 | **Built-in: `cd`** | Commands | Supports absolute (`/`), home (`~`) (`HOME` environment variable), parent (`../`), and relative path navigation. |
 | **PATH Resolution** | File System | Iterates through directories in the `PATH` environment variable using `std::filesystem`. |
+| **Input Parsing** | Parsing | Correct Parsing for single and double quotes. And support for backslashes. (using a state machine) |
 | **External Execution** | Process Mgmt | Uses `fork()`, `execv()`, and `waitpid()` to execute external programs as child processes. |
