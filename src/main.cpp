@@ -104,6 +104,7 @@ public:
     commands["echo"] = [this](auto args) { handle_echo(args); };
     commands["cd"] = [this](auto args) { handle_cd(args); };
     commands["type"] = [this](auto args) { handle_type(args); };
+    commands["history"] = [this](auto args) {handle_history(args); };
 
     // add the commands to the Trie
     add_command_to_Trie(command_trie);
@@ -112,6 +113,7 @@ public:
   void run() {
     std::cout << std::unitbuf;
     int tab_counter = 0; // for consecutive tab presses
+    int up_counter = 0;
 
     while (running) {
       std::cout << "$ " << std::flush;
@@ -126,6 +128,7 @@ public:
         if (c == '\r' || c == '\n') { // ENTER
           std::cout << "\n";
           tab_counter = 0;
+          up_counter = 0;
           break;
         }
 
@@ -176,6 +179,40 @@ public:
             std::cout << "\b \b" << std::flush; // move cursor back
           }
           tab_counter = 0;
+        } else if (c== 27) {
+          //potential escape
+          char seq[3];
+          // check for more char in the buffer
+          if (read(STDIN_FILENO, &seq[0],1) > 0 && read(STDIN_FILENO, &seq[1], 1) > 0) {
+            if (seq[0] == '[') {
+              switch (seq[1]) {
+                case 'A': // UP ARROW
+                  if (!history.empty() && up_counter < static_cast<int>(history.size())) {
+                    up_counter++;
+                    input = history[history.size() - up_counter];
+
+                    // ^[2K clears line and \r moves to start of line
+                    std::cout << "\33[2K\r$" << " " << input << std::flush;
+                  }
+                  break;
+                case 'B': // DOWN ARROW
+                  if (up_counter > 0) {
+                    up_counter--;
+                    if (up_counter == 0) {
+                      input = "";
+                    } else {
+                      input = history[history.size() - up_counter];
+                    }
+                    std::cout << "\33[2K\r$" << " "  << input << std::flush;
+                  }
+                  break;
+                case 'C': // RIGHT ARROW
+                  break; // TODO
+                case 'D': // LEFT ARROW
+                  break; // TODO
+              }
+            }
+          }
         } else { // normal char
           input += c;
           std::cout << c << std::flush;
@@ -183,9 +220,12 @@ public:
         }
       }
 
+
       setRawMode(false);
 
       if (input.empty()) continue;
+
+      history.push_back(input);
 
       // parsing
       std::vector<std::string> tokens = parse_arguments(input);
@@ -283,8 +323,9 @@ private:
   std::filesystem::path curDir;
   bool running;
   std::map<std::string, std::function<void(std::vector<std::string>)>> commands;
-  std::unordered_set<std::string> builtins{"exit", "echo", "type","pwd", "cd"};
+  std::unordered_set<std::string> builtins{"exit", "echo", "type","pwd", "cd","history"};
   Trie command_trie;
+  std::vector<std::string> history = {};
 
   void add_command_to_Trie(Trie& command_trie) {
 
@@ -571,6 +612,23 @@ private:
     // wait for all children
     while (wait(nullptr) > 0);
   }
+
+  void handle_history(const std::vector<std::string>& arg_list) {
+    int i = 0;
+    int arg = 0;
+    try {
+      if (!arg_list.empty()) {
+        arg = history.size() - stoi(arg_list[0]);
+      }
+    } catch (std::invalid_argument& e ) {
+      arg = 0;
+      std::cout << "std::invalid_argument::what(): " << e.what() << '\n';
+    }
+
+    for (i = i + arg; i < history.size(); ++i) {
+        std::cout << "    " << i+1 << "  " << history[i] << std::endl;
+    }
+  }
 };
 
 int main() {
@@ -583,7 +641,7 @@ int main() {
   // parsing single and double quotes + \ + ~ (HOME)
   // redirecting 1> > 2> 1>> >>
   // autocompletion
-  // pipe redirecting | 
+  // pipe redirecting |
   // + all commands specified in PATH
 
   // Flush after every std::cout / std:cerr
