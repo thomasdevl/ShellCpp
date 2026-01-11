@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <complex>
 #include <filesystem>
 #include <functional>
@@ -11,6 +12,87 @@
 
 #include <vector>
 #include <sys/wait.h>
+#include <termios.h>
+
+
+// Trie used for autocompletion
+class TrieNode {
+public:
+  bool endofWord;
+  std::unordered_map<char, TrieNode*> children;
+
+  TrieNode() : endofWord(false){}
+
+  ~TrieNode() {
+    for (auto& pair : children) {
+      delete pair.second;
+    }
+  }
+};
+
+class Trie {
+  TrieNode* root;
+
+  // Helper for recursive prefix searching
+  void collectAllWords(TrieNode* node, std::string currentPrefix, std::vector<std::string>& results) {
+    if (node->endofWord) {
+      results.push_back(currentPrefix);
+    }
+    for (auto const& [ch, childNode] : node->children) {
+      collectAllWords(childNode, currentPrefix + ch, results);
+    }
+  }
+
+public:
+  Trie() {root = new TrieNode();}
+  ~Trie() { delete root; }
+
+  void insert(std::string word) {
+    TrieNode* node = root;
+    for (char c : word) {
+      if (node->children.find(c) == node->children.end()) {
+        node->children[c] = new TrieNode();
+      }
+      node = node->children[c];
+    }
+    node->endofWord = true;
+  }
+
+  std::vector<std::string> get_completions(std::string prefix) {
+    TrieNode* node = root;
+    for (char c : prefix) {
+      if (node->children.find(c) == node->children.end()) {
+        return {}; // No matches
+      }
+      node = node->children[c];
+    }
+    std::vector<std::string> results;
+    collectAllWords(node, prefix, results);
+    return results;
+  }
+
+  std::string getLongestCommonPrefix(std::string prefix) {
+    TrieNode* node = root;
+
+    // go to the end of prefix
+    for (char c : prefix) {
+      if (node->children.find(c) == node->children.end()) {
+        return prefix; // No matches at all
+      }
+      node = node->children[c];
+    }
+
+    // keep going if there is only one child + not end of word
+    std::string lcp = prefix;
+    while (node->children.size() == 1 && !node->endofWord) {
+      auto it = node->children.begin();
+      lcp += it->first;
+      node = it->second;
+    }
+
+    return lcp;
+  }
+};
 
 
 class Shell {
@@ -22,15 +104,88 @@ public:
     commands["echo"] = [this](auto args) { handle_echo(args); };
     commands["cd"] = [this](auto args) { handle_cd(args); };
     commands["type"] = [this](auto args) { handle_type(args); };
+
+    // add the commands to the Trie
+    add_command_to_Trie(command_trie);
   }
 
   void run() {
     std::cout << std::unitbuf;
-    std::string input;
+    int tab_counter = 0; // for consecutive tab presses
 
     while (running) {
-      std::cout << "$ ";
-      if (!std::getline(std::cin, input)) break;
+      std::cout << "$ " << std::flush;
+
+      std::string input;
+      setRawMode(true); // all individual keystrokes
+
+      while (true) {
+        char c;
+        if (read(STDIN_FILENO, &c, 1) <= 0) break;
+
+        if (c == '\r' || c == '\n') { // ENTER
+          std::cout << "\n";
+          tab_counter = 0;
+          break;
+        }
+
+        if (c == '\t') { // TAB
+          std::vector<std::string> matches = get_matches(input);
+
+          if (matches.empty()) {
+            // bell if no match
+            std::cout << '\a' << std::flush;
+            tab_counter = 0;
+          }
+          else if (matches.size() == 1) {
+            // perfect autocomplete
+            std::string completion = matches[0].substr(input.length());
+            input += completion + " ";
+            std::cout << completion << " " << std::flush;
+            tab_counter = 0;
+          }
+          else {
+            std::string lcp = command_trie.getLongestCommonPrefix(input);
+
+            if (lcp.length() > input.length()) {
+              // add the lcp
+              std::string extra = lcp.substr(input.length());
+              input = lcp;
+              std::cout << extra << std::flush;
+            } else {
+              tab_counter++;
+
+              if (tab_counter == 1) {
+                std::cout << '\a' << std::flush; // bell
+              } else if (tab_counter >= 2) {
+                // multiple matches -> list them all.
+                std::cout << "\n";
+                for (size_t i = 0; i < matches.size(); ++i) {
+                  std::cout << matches[i] << (i == matches.size() - 1 ? "" : "  ");
+                }
+                // Move to a new line and reprint the prompt + current typed text
+                std::cout << "\n$ " << input << std::flush;
+                tab_counter = 0; // Reset after showing
+              }
+            }
+          }
+        }
+        else if (c == 127) { // BACKSPACE (ASCII 127)
+          if (!input.empty()) {
+            input.pop_back();
+            std::cout << "\b \b" << std::flush; // move cursor back
+          }
+          tab_counter = 0;
+        } else { // normal char
+          input += c;
+          std::cout << c << std::flush;
+          tab_counter = 0;
+        }
+      }
+
+      setRawMode(false);
+
+      if (input.empty()) continue;
 
       // parsing
       std::vector<std::string> tokens = parse_arguments(input);
@@ -115,6 +270,42 @@ private:
   bool running;
   std::map<std::string, std::function<void(std::vector<std::string>)>> commands;
   std::unordered_set<std::string> builtins{"exit", "echo", "type","pwd", "cd"};
+  Trie command_trie;
+
+  void add_command_to_Trie(Trie& command_trie) {
+
+    // add built-ins
+    for (const auto& command: builtins) {
+      command_trie.insert(command);
+    }
+
+    // add all the executables from PATH
+    const char* path_env = std::getenv("PATH");
+    if (!path_env) return;
+
+    std::stringstream ss(path_env);
+    std::string dir_path;
+
+    // splits path by :
+    while (std::getline(ss, dir_path, ':')) {
+      if (dir_path.empty() || !std::filesystem::exists(dir_path)) continue;
+
+      try {
+        for (const auto& entry : std::filesystem::directory_iterator(dir_path)) {
+          // Ensure it's a file and we have permission to execute it
+          if (entry.is_regular_file()) {
+            auto permissions = entry.status().permissions();
+            bool is_executable = (permissions & std::filesystem::perms::owner_exec) != std::filesystem::perms::none;
+
+            if (is_executable) {
+              command_trie.insert(entry.path().filename().string());
+            }
+          }
+        }
+      } catch (const std::filesystem::filesystem_error& e) {}
+    }
+
+  }
 
   std::string find_in_path(const std::string& cmd) {
     const char* env_p = std::getenv("PATH");
@@ -200,7 +391,7 @@ private:
       perror("execv");
       exit(1);
     }
-    
+
     if (pid > 0) {
       int status;
       waitpid(pid, &status, 0);
@@ -265,17 +456,56 @@ private:
     return arg_list;
   }
 
+  void setRawMode(bool enable) {
+    static struct termios oldt;
+    static bool firstCall = true;
+
+    if (firstCall) {
+      tcgetattr(STDIN_FILENO, &oldt);
+      firstCall = false;
+    }
+
+    if (enable) {
+      // current terminal settings
+      static struct termios newt = oldt;
+
+      // ICANON disables line buffering (Canonical mode)
+      // ECHO disables printing the character back to the screen
+      newt.c_lflag &= ~(ICANON | ECHO);
+
+      // Apply new settings
+      tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    } else {
+
+      // restore original
+      tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    }
+  }
+
+  std::vector<std::string> get_matches(std::string & partial) {
+    if (partial.empty()) return {};
+
+    std::vector<std::string> matches = command_trie.get_completions(partial);
+
+    // remove duplicates
+    std::sort(matches.begin(), matches.end());
+    matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+
+    return matches;
+  }
+
 };
 
 int main() {
   //  -- supported --
-  // exit : exit shell
+  // exit : exit Shell
   // echo : print out args
   // type : type of file/command/etc
   // pwd : prints working directory
   // cd : change directory
-  // parsing single and double quotes + \
-  // redirecting 1> > 2> 1>> >>  
+  // parsing single and double quotes + \ + ~ (HOME)
+  // redirecting 1> > 2> 1>> >>
+  // autocompletion
   // + all commands specified in PATH
 
   // Flush after every std::cout / std:cerr
