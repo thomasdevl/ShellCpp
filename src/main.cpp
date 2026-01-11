@@ -191,77 +191,91 @@ public:
       std::vector<std::string> tokens = parse_arguments(input);
       if (tokens.empty()) continue;
 
-      // redirecting
-      std::string output_file;
-      int original_stdout = -1;
-      int original_stderr = -1;
+      std::vector<std::vector<std::string>> pipeline;
+      std::vector<std::string>  current_cmd;
 
-      for (auto it = tokens.begin(); it != tokens.end(); ) {
-        bool is_stdout = (*it == ">" || *it == "1>");
-        bool is_stdout_append = (*it == ">>" || *it == "1>>");
-        bool is_stderr = (*it == "2>");
-        bool is_stderr_append = (*it == "2>>");
-
-        if (is_stdout || is_stderr || is_stdout_append || is_stderr_append) {
-          if (std::next(it) == tokens.end()) {
-            std::cerr << "shell: syntax error near unexpected token 'newline'" << std::endl;
-          }
-
-          output_file = *std::next(it);
-          int flags = O_WRONLY | O_CREAT;
-          flags |= (is_stdout_append || is_stderr_append) ? O_APPEND : O_TRUNC;
-
-          int fd = open(output_file.c_str(), flags, 0644);
-          if (fd < 0) {
-            perror("open");
-            goto next_iteration;
-          }
-
-          if (is_stdout || is_stdout_append) {
-            if (original_stdout == -1) original_stdout = dup(STDOUT_FILENO);
-            dup2(fd, STDOUT_FILENO);
-          } else {
-            if (original_stderr == -1) original_stderr = dup(STDERR_FILENO);
-            dup2(fd, STDERR_FILENO);
-          }
-
-          close(fd);
-          tokens.erase(it, it + 2);
-          break;
+      for (const auto& token : tokens) {
+        if (token == "|") {
+          pipeline.push_back(current_cmd);
+          current_cmd.clear();
         } else {
+          current_cmd.push_back(token);
+        }
+      }
+      pipeline.push_back(current_cmd);
+
+      if (pipeline.size() > 1) {
+        handle_pipeline(pipeline);
+
+      } else {
+
+        // redirecting
+        std::string output_file;
+        int original_stdout = -1;
+        int original_stderr = -1;
+
+        for (auto it = tokens.begin(); it != tokens.end(); ) {
+          bool is_stdout = (*it == ">" || *it == "1>");
+          bool is_stdout_append = (*it == ">>" || *it == "1>>");
+          bool is_stderr = (*it == "2>");
+          bool is_stderr_append = (*it == "2>>");
+
+          if (is_stdout || is_stderr || is_stdout_append || is_stderr_append) {
+            if (std::next(it) == tokens.end()) {
+              std::cerr << "shell: syntax error near unexpected token 'newline'" << std::endl;
+            }
+
+            output_file = *std::next(it);
+            int flags = O_WRONLY | O_CREAT;
+            flags |= (is_stdout_append || is_stderr_append) ? O_APPEND : O_TRUNC;
+
+            int fd = open(output_file.c_str(), flags, 0644);
+            if (fd < 0) {
+              perror("open");
+              goto next_iteration;
+            }
+
+            if (is_stdout || is_stdout_append) {
+              if (original_stdout == -1) original_stdout = dup(STDOUT_FILENO);
+              dup2(fd, STDOUT_FILENO);
+            } else {
+              if (original_stderr == -1) original_stderr = dup(STDERR_FILENO);
+              dup2(fd, STDERR_FILENO);
+            }
+
+            close(fd);
+            tokens.erase(it, it + 2);
+            break;
+          }
           ++it;
         }
-      }
 
-      if (tokens.empty()) goto cleanup;
+        if (tokens.empty()) goto cleanup;
 
-      {
-        // separate cmd and arg
-        std::string cmd_name = tokens[0];
-        std::vector args(tokens.begin() + 1, tokens.end());
+        {
+          // separate cmd and arg
+          std::string cmd_name = tokens[0];
+          std::vector args(tokens.begin() + 1, tokens.end());
 
-        // dispatch
-        if (commands.contains(cmd_name)) {
-          commands[cmd_name](args);
-        } else {
-          handle_external_command(cmd_name, args);
-        }
-      }
-
-      cleanup:
-        // restore STDOUT
-        if (original_stdout != -1) {
-          dup2(original_stdout, STDOUT_FILENO);
-          close(original_stdout);
+          // dispatch
+          execute_command(tokens,false);
         }
 
-      // restore STDERR
-      if (original_stderr != -1) {
-        dup2(original_stderr, STDERR_FILENO);
-        close(original_stderr);
-      }
+        cleanup:
+          // restore STDOUT
+          if (original_stdout != -1) {
+            dup2(original_stdout, STDOUT_FILENO);
+            close(original_stdout);
+          }
 
-      next_iteration:;
+        // restore STDERR
+        if (original_stderr != -1) {
+          dup2(original_stderr, STDERR_FILENO);
+          close(original_stderr);
+        }
+
+        next_iteration:;
+      }
     }
   }
 
@@ -323,11 +337,13 @@ private:
   }
 
   void handle_echo(const std::vector<std::string>& arg_list) {
-    for (const auto & i : arg_list) {
-      std::cout << i << " ";
+    for (size_t i = 0; i < arg_list.size(); ++i) {
+      std::cout << arg_list[i];
+      if (i < arg_list.size() -1) {
+         std::cout << " ";
+      }
     }
     std::cout << std::endl;
-
   }
 
   void handle_type(const std::vector<std::string>& arg_list) {
@@ -368,35 +384,6 @@ private:
       std::filesystem::current_path(curDir); // Sync actual process dir
     } else {
       std::cerr << "cd: " << path_str << ": No such file or directory" << std::endl;
-    }
-  }
-
-  void handle_external_command(const std::string& command, const std::vector<std::string>& arg_list) {
-    std::string full_path = find_in_path(command);
-    if (full_path.empty()) {
-      std::cerr << command << ": command not found" << std::endl;
-      return;
-    }
-
-    std::vector<char*> c_args;
-    c_args.push_back(const_cast<char*>(command.c_str()));
-    for (const auto& a : arg_list) {
-      c_args.push_back(const_cast<char*>(a.c_str()));
-    }
-    c_args.push_back(nullptr);
-
-    pid_t pid = fork();
-    if (pid == 0) {
-      execv(full_path.c_str(), c_args.data());
-      perror("execv");
-      exit(1);
-    }
-
-    if (pid > 0) {
-      int status;
-      waitpid(pid, &status, 0);
-    } else {
-      perror("fork");
     }
   }
 
@@ -494,6 +481,96 @@ private:
     return matches;
   }
 
+  void run_exec(const std::string& path, const std::vector<std::string>& tokens) {
+    std::vector<char*> c_args;
+    for (const auto& t : tokens) c_args.push_back(const_cast<char*>(t.c_str()));
+    c_args.push_back(nullptr);
+    execv(path.c_str(), c_args.data());
+    perror("execv");
+    exit(1);
+  }
+
+  void execute_command(std::vector<std::string> tokens, bool is_child) {
+    if (tokens.empty()) return;
+    std::string cmd_name = tokens[0];
+    std::vector<std::string> args(tokens.begin() + 1, tokens.end());
+
+    if (commands.contains(cmd_name)) {
+      commands[cmd_name](args);
+      // If we are in a child process (like in a pipe), we must exit
+      if (is_child) exit(0);
+    } else {
+      std::string full_path = find_in_path(cmd_name);
+      if (full_path.empty()) {
+        std::cerr << cmd_name << ": command not found" << std::endl;
+        if (is_child) exit(1);
+        return;
+      }
+
+      // External commands always need a fork if we aren't already in one
+      if (!is_child) {
+        pid_t pid = fork();
+        if (pid == 0) {
+          run_exec(full_path, tokens);
+        } else {
+          waitpid(pid, nullptr, 0);
+        }
+      } else {
+        run_exec(full_path, tokens);
+      }
+    }
+  }
+
+  void handle_pipeline(std::vector<std::vector<std::string>>& pipeline) {
+    int num_cmds = pipeline.size();
+    int prev_pipe_read_end = -1;
+
+    for (int i = 0; i < num_cmds; ++i) {
+      int pipefds[2];
+
+      // create pipe for all but last
+      if (i < num_cmds - 1) {
+        if (pipe(pipefds) == -1) {
+          perror("pipe");
+          return;
+        }
+      }
+
+      pid_t pid = fork();
+      if (pid == 0) { // child
+
+        // get input from previous pipe
+        if (prev_pipe_read_end != -1) {
+          dup2(prev_pipe_read_end, STDIN_FILENO);
+          close(prev_pipe_read_end);
+        }
+
+        // send output to the current pipe
+        if (i < num_cmds - 1) {
+          close(pipefds[0]); // Close unused read end
+          dup2(pipefds[1],STDOUT_FILENO);
+          close(pipefds[1]);
+        }
+
+        execute_command(pipeline[i], true);
+        exit(0);
+      }
+
+      if (pid < 0) {
+        perror("fork");
+        return;
+      }
+
+      if (prev_pipe_read_end != -1) close(prev_pipe_read_end);
+      if (i < num_cmds - 1) {
+        close(pipefds[1]); // parent doesn't write
+        prev_pipe_read_end = pipefds[0]; // save read end for next child
+      }
+    }
+
+    // wait for all children
+    while (wait(nullptr) > 0);
+  }
 };
 
 int main() {
@@ -506,6 +583,7 @@ int main() {
   // parsing single and double quotes + \ + ~ (HOME)
   // redirecting 1> > 2> 1>> >>
   // autocompletion
+  // pipe redirecting | 
   // + all commands specified in PATH
 
   // Flush after every std::cout / std:cerr
