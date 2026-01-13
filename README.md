@@ -11,7 +11,8 @@ Implementation of a POSIX compliant shell in C++
 | **Built-in: `type`** | Commands | Identifies if a command is a **builtin** or an **executable** in the `PATH`. |
 | **Built-in: `pwd`** | Commands | Tracks and prints the current working directory using `std::filesystem`. |
 | **Built-in: `cd`** | Commands | Supports absolute (`/`), home (`~`), parent (`../`), and relative navigation. |
-| **Built-in: `history`** | Commands | Displays the session's command list with optional index-based filtering. |
+| **Built-in: `history`** | Commands | Logic to manage the history vector. Supports `-a` (append), `-r` (read), and `-w` (write) to custom files. |
+| **History Persistence** | Lifecycle | **Startup:** Automatically loads `HISTFILE` into memory. <br> **Exit:** Automatically writes memory back to `HISTFILE`. |
 | **PATH Resolution** | File System | Iterates through `PATH`, filtering for executables with `access(X_OK)`. |
 | **Trie Data Structure** | Performance | Efficiently stores commands for $O(L)$ lookup and prefix completion. |
 | **Tab Autocompletion** | UX | Supports **Double-Tab**: rings bell on 1st tab, lists matches on 2nd. |
