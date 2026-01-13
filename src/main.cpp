@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <unistd.h>
 #include <fcntl.h>
+#include <fstream>
 
 #include <vector>
 #include <sys/wait.h>
@@ -99,7 +100,7 @@ class Shell {
 public:
   Shell() : curDir(std::filesystem::current_path()), running(true) {
     // built ins
-    commands["exit"] = [this](auto args){running = false;};
+    commands["exit"] = [this](auto args){handle_exit();};
     commands["pwd"] = [this](auto args) {std::cout << curDir.string() << std::endl;};
     commands["echo"] = [this](auto args) { handle_echo(args); };
     commands["cd"] = [this](auto args) { handle_cd(args); };
@@ -108,6 +109,11 @@ public:
 
     // add the commands to the Trie
     add_command_to_Trie(command_trie);
+
+    const char* env_hist = std::getenv("HISTFILE");
+    if (env_hist) {
+      history = get_history_from_file(std::getenv("HISTFILE"));
+    }
   }
 
   void run() {
@@ -326,6 +332,17 @@ private:
   std::unordered_set<std::string> builtins{"exit", "echo", "type","pwd", "cd","history"};
   Trie command_trie;
   std::vector<std::string> history = {};
+  int appending_until = 0;
+
+  void handle_exit() {
+
+    const char* env_hist = std::getenv("HISTFILE");
+    if (env_hist) {
+      write_history_to_file(std::getenv("HISTFILE"));
+    }
+    
+    running = false;
+  }
 
   void add_command_to_Trie(Trie& command_trie) {
 
@@ -613,7 +630,102 @@ private:
     while (wait(nullptr) > 0);
   }
 
+  std::vector<std::string> get_history_from_file(const std::filesystem::path& path_to_file) {
+    std::ifstream f(path_to_file);
+
+    if (!f.is_open()) {
+      std::cerr << "Error opening file : " << path_to_file.string() << std::endl;
+    }
+
+    std::vector<std::string> content;
+    std::string s;
+
+    while (std::getline(f,s)) {
+      content.push_back(s);
+    }
+
+    f.close();
+    return content;
+  }
+
+  void write_history_to_file(const std::filesystem::path& path_to_file) {
+    std::ofstream f(path_to_file);
+
+    if (!f.is_open()) {
+      std::cerr << "Error opening file : " << path_to_file.string() << std::endl;
+    }
+
+    for (const auto& line: history) {
+      f << line << std::endl;
+    }
+
+    f.close();
+  }
+
+  void append_history_to_file(const std::filesystem::path& path_to_file) {
+    std::ofstream f(path_to_file, std::ofstream::app | std::ofstream::out);
+
+
+    if (!f.is_open()) {
+      std::cerr << "Error opening file : " << path_to_file.string() << std::endl;
+    }
+
+    for (int i = appending_until; i < history.size(); ++i) {
+      f << history[i] << std::endl;
+    }
+
+    f.close();
+  }
+
   void handle_history(const std::vector<std::string>& arg_list) {
+
+
+    for (int i = 0; i < arg_list.size(); ++i) {
+
+      // -r command
+      if (arg_list[i] == "-r") {
+        // get filename
+        if (i+1 >= arg_list.size()) {
+          std::cout << "history : no filename given to -r" << std::endl;
+          return;
+        }
+
+        std::string last_cmd = history[history.size()-1];
+        history = get_history_from_file(arg_list[i+1]);
+        history.insert(history.begin(), last_cmd);
+
+        return;
+      }
+
+      // -w command
+      if (arg_list[i] == "-w") {
+        // get filename
+        if (i+1 >= arg_list.size()) {
+          std::cout << "history : no filename given to -w" << std::endl;
+          return;
+        }
+
+        write_history_to_file(arg_list[i+1]);
+
+        return;
+      }
+
+      // -a command
+      if (arg_list[i] == "-a") {
+        // get filename
+        if (i+1 >= arg_list.size()) {
+          std::cout << "history : no filename given to -w" << std::endl;
+          return;
+        }
+
+        append_history_to_file(arg_list[i+1]);
+
+        appending_until = history.size();
+
+        return;
+      }
+    }
+
     int i = 0;
     int arg = 0;
     try {
@@ -638,10 +750,13 @@ int main() {
   // type : type of file/command/etc
   // pwd : prints working directory
   // cd : change directory
+  // history -r -w -a : show command history
   // parsing single and double quotes + \ + ~ (HOME)
   // redirecting 1> > 2> 1>> >>
   // autocompletion
   // pipe redirecting |
+  // up + down arrow history navigation
+  // history saving and reading from HISTFILE
   // + all commands specified in PATH
 
   // Flush after every std::cout / std:cerr
