@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <complex>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -15,85 +14,7 @@
 #include <sys/wait.h>
 #include <termios.h>
 
-
-// Trie used for autocompletion
-class TrieNode {
-public:
-  bool endofWord;
-  std::unordered_map<char, TrieNode*> children;
-
-  TrieNode() : endofWord(false){}
-
-  ~TrieNode() {
-    for (auto& pair : children) {
-      delete pair.second;
-    }
-  }
-};
-
-class Trie {
-  TrieNode* root;
-
-  // Helper for recursive prefix searching
-  void collectAllWords(TrieNode* node, std::string currentPrefix, std::vector<std::string>& results) {
-    if (node->endofWord) {
-      results.push_back(currentPrefix);
-    }
-    for (auto const& [ch, childNode] : node->children) {
-      collectAllWords(childNode, currentPrefix + ch, results);
-    }
-  }
-
-public:
-  Trie() {root = new TrieNode();}
-  ~Trie() { delete root; }
-
-  void insert(std::string word) {
-    TrieNode* node = root;
-    for (char c : word) {
-      if (node->children.find(c) == node->children.end()) {
-        node->children[c] = new TrieNode();
-      }
-      node = node->children[c];
-    }
-    node->endofWord = true;
-  }
-
-  std::vector<std::string> get_completions(std::string prefix) {
-    TrieNode* node = root;
-    for (char c : prefix) {
-      if (node->children.find(c) == node->children.end()) {
-        return {}; // No matches
-      }
-      node = node->children[c];
-    }
-    std::vector<std::string> results;
-    collectAllWords(node, prefix, results);
-    return results;
-  }
-
-  std::string getLongestCommonPrefix(std::string prefix) {
-    TrieNode* node = root;
-
-    // go to the end of prefix
-    for (char c : prefix) {
-      if (node->children.find(c) == node->children.end()) {
-        return prefix; // No matches at all
-      }
-      node = node->children[c];
-    }
-
-    // keep going if there is only one child + not end of word
-    std::string lcp = prefix;
-    while (node->children.size() == 1 && !node->endofWord) {
-      auto it = node->children.begin();
-      lcp += it->first;
-      node = it->second;
-    }
-
-    return lcp;
-  }
-};
+#include "Trie.hpp"
 
 
 class Shell {
@@ -340,7 +261,7 @@ private:
     if (env_hist) {
       write_history_to_file(std::getenv("HISTFILE"));
     }
-    
+
     running = false;
   }
 
